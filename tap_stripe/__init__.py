@@ -548,6 +548,7 @@ def sync_full_table_stream(stream_name):
                 expand=STREAM_TO_EXPAND_FIELDS.get(stream_name, [])
         ).auto_paging_iter():
             rec = unwrap_data_objects(recursive_to_dict(stream_obj))
+            rec = jsonify_tiers(rec)
             rec = reduce_foreign_keys(rec, stream_name)
             # The object carries its own `updated` timestamp; fall back to
             # `created` so the column is always populated.
@@ -673,6 +674,7 @@ def sync_stream(stream_name, is_sub_stream=False):
 
                 # get the replication key value from the object
                 rec = unwrap_data_objects(recursive_to_dict(stream_obj))
+                rec = jsonify_tiers(rec)
                 rec = reduce_foreign_keys(rec, stream_name)
                 stream_obj_created = rec[replication_key]
                 rec['updated'] = stream_obj_created
@@ -891,7 +893,7 @@ def sync_sub_stream(sub_stream_name, parent_obj, updates=False):
                 # payout_transactions is a join table
                 obj_ad_dict = {"id": obj_ad_dict['id'], "payout_id": parent_obj['id']}
 
-            rec = transformer.transform(unwrap_data_objects(obj_ad_dict),
+            rec = transformer.transform(jsonify_tiers(unwrap_data_objects(obj_ad_dict)),
                                         Context.get_catalog_entry(sub_stream_name)['schema'],
                                         metadata.to_map(
                                             Context.get_catalog_entry(sub_stream_name)['metadata']
@@ -946,6 +948,31 @@ def recursive_to_dict(some_obj):
 
     # Else just return
     return some_obj
+
+
+def jsonify_tiers(rec):
+    """
+    Stripe price/plan `tiers` are emitted as an array of JSON strings (the tap
+    schema types each tier item as a plain `string`). stripe-python v15 returns
+    `*_decimal` fields as `decimal.Decimal` and `to_dict()` yields plain dicts,
+    so singer's default `str(dict)` stringification produces an invalid Python
+    repr (single quotes, `None`, `Decimal('..')`) instead of JSON, which breaks
+    downstream `parse_json`. Pre-serialize each tier dict to real JSON here so
+    the landing-zone value stays parseable. `default=str` renders any residual
+    Decimal as its string form (matching the historical `*_decimal` shape).
+    """
+    if not isinstance(rec, dict):
+        return rec
+    for key, value in rec.items():  # pylint: disable=invalid-name
+        if key == 'tiers' and isinstance(value, list):
+            rec[key] = [json.dumps(item, default=str) if isinstance(item, dict)
+                        else item for item in value]
+        elif isinstance(value, dict):
+            jsonify_tiers(value)
+        elif isinstance(value, list):
+            for item in value:
+                jsonify_tiers(item)
+    return rec
 
 
 def sync_event_updates(stream_name, is_sub_stream):
@@ -1077,6 +1104,7 @@ def sync_event_updates(stream_name, is_sub_stream):
                     rec['lines'] = [line_item for line_item in rec['lines']
                                     if line_item.get('id')]
 
+                rec = jsonify_tiers(rec)
                 rec = reduce_foreign_keys(rec, stream_name)
                 rec["updated"] = events_obj.created
                 rec["updated_by_event_type"] = events_obj.type
