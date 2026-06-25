@@ -319,7 +319,7 @@
           "items": {
             "type": [
               "null",
-              "integer",
+              "string",
               "object"
             ],
             "properties": {

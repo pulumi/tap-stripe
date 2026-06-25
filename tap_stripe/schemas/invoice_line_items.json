@@ -395,6 +395,7 @@
           "items": {
             "type": [
               "null",
+              "string",
               "object"
             ],
             "properties": {
